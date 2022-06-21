@@ -7,7 +7,8 @@ import torch.nn as nn
 import torch.nn.init as init
 
 from torch.utils.data import Dataset, TensorDataset, ConcatDataset
-from torchvision import datasets, transforms
+import torchvision
+# from torchvision import datasets, transforms
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,15 @@ class CustomTensorDataset(Dataset):
     def __len__(self):
         return self.tensors[0].size(0)
 
-def create_datasets(data_path, dataset_name, num_clients, num_shards, iid):
+    def __add__(self, other):
+        assert self.tensors[0][0].size(0) == other.tensors[0][0].size(0)
+        input = torch.cat((self.tensors[0], other.tensors[0]), 0)
+        label = torch.cat((self.tensors[1], other.tensors[1]), 0)
+
+        self.tensors = (input, label)
+
+
+def load_raw_datasets(data_path, dataset_name):
     """Split the whole dataset in IID or non-IID manner for distributing to clients."""
     dataset_name = dataset_name.upper()
     # get dataset from torchvision.datasets if exists
@@ -141,56 +150,69 @@ def create_datasets(data_path, dataset_name, num_clients, num_shards, iid):
         training_dataset.data = np.asarray(training_dataset.data)
     if "list" not in str(type(training_dataset.targets)):
         training_dataset.targets = training_dataset.targets.tolist()
-    
-    # split dataset according to iid flag
-    if iid:
-        # shuffle data
-        shuffled_indices = torch.randperm(len(training_dataset))
-        training_inputs = training_dataset.data[shuffled_indices]
-        training_labels = torch.Tensor(training_dataset.targets)[shuffled_indices]
 
-        # partition data into num_clients
-        split_size = len(training_dataset) // num_clients
-        split_datasets = list(
-            zip(
-                torch.split(torch.Tensor(training_inputs), split_size),
-                torch.split(torch.Tensor(training_labels), split_size)
-            )
-        )
+    sorted_indices = torch.argsort(torch.Tensor(training_dataset.targets))
+    training_inputs = training_dataset.data[sorted_indices]
 
-        # finalize bunches of local datasets
-        local_datasets = [
-            CustomTensorDataset(local_dataset, transform=transform)
-            for local_dataset in split_datasets
-            ]
-    else:
-        # sort data by labels
-        sorted_indices = torch.argsort(torch.Tensor(training_dataset.targets))
-        training_inputs = training_dataset.data[sorted_indices]
-        training_labels = torch.Tensor(training_dataset.targets)[sorted_indices]
+    indices = []
+    for categories in range(num_categories):
+        start = categories * len(sorted_indices) / num_categories
+        end = (categories + 1) * len(sorted_indices) / num_categories
+        indices.append(np.arange(int(start), int(end)))
 
-        # partition data into shards first
-        shard_size = len(training_dataset) // num_shards #300
-        shard_inputs = list(torch.split(torch.Tensor(training_inputs), shard_size))
-        shard_labels = list(torch.split(torch.Tensor(training_labels), shard_size))
+    return indices, training_inputs, test_dataset, transform
 
-        # sort the list to conveniently assign samples to each clients from at least two classes
-        shard_inputs_sorted, shard_labels_sorted = [], []
-        for i in range(num_shards // num_categories):
-            for j in range(0, ((num_shards // num_categories) * num_categories), (num_shards // num_categories)):
-                shard_inputs_sorted.append(shard_inputs[i + j])
-                shard_labels_sorted.append(shard_labels[i + j])
-                
-        # finalize local datasets by assigning shards to each client
-        shards_per_clients = num_shards // num_clients
-        local_datasets = [
-            CustomTensorDataset(
-                (
-                    torch.cat(shard_inputs_sorted[i:i + shards_per_clients]),
-                    torch.cat(shard_labels_sorted[i:i + shards_per_clients]).long()
-                ),
-                transform=transform
-            ) 
-            for i in range(0, len(shard_inputs_sorted), shards_per_clients)
-        ]
-    return local_datasets, test_dataset
+    # # split dataset according to iid flag
+    # if iid:
+    #     # shuffle data
+    #     shuffled_indices = torch.randperm(len(training_dataset))
+    #     training_inputs = training_dataset.data[shuffled_indices]
+    #     training_labels = torch.Tensor(training_dataset.targets)[shuffled_indices]
+    #
+    #     # partition data into num_clients
+    #     split_size = len(training_dataset) // num_clients
+    #     split_datasets = list(
+    #         zip(
+    #             torch.split(torch.Tensor(training_inputs), split_size),
+    #             torch.split(torch.Tensor(training_labels), split_size)
+    #         )
+    #     )
+    #
+    #     # finalize bunches of local datasets
+    #     local_datasets = [
+    #         CustomTensorDataset(local_dataset, transform=transform)
+    #         for local_dataset in split_datasets
+    #         ]
+    # else:
+    #     # sort data by labels
+    #     sorted_indices = torch.argsort(torch.Tensor(training_dataset.targets))
+    #     training_inputs = training_dataset.data[sorted_indices]
+    #     training_labels = torch.Tensor(training_dataset.targets)[sorted_indices]
+    #
+    #     # partition data into shards first
+    #     shard_size = len(training_dataset) // num_shards #300
+    #     shard_inputs = list(torch.split(torch.Tensor(training_inputs), shard_size))
+    #     shard_labels = list(torch.split(torch.Tensor(training_labels), shard_size))
+    #
+    #     # sort the list to conveniently assign samples to each clients from at least two classes
+    #     shard_inputs_sorted, shard_labels_sorted = [], []
+    #     for i in range(num_shards // num_categories):
+    #         for j in range(0, ((num_shards // num_categories) * num_categories), (num_shards // num_categories)):
+    #             shard_inputs_sorted.append(shard_inputs[i + j])
+    #             shard_labels_sorted.append(shard_labels[i + j])
+    #
+    #     # finalize local datasets by assigning shards to each client
+    #     shards_per_clients = num_shards // num_clients
+    #     local_datasets = [
+    #         CustomTensorDataset(
+    #             (
+    #                 torch.cat(shard_inputs_sorted[i:i + shards_per_clients]),
+    #                 torch.cat(shard_labels_sorted[i:i + shards_per_clients]).long()
+    #             ),
+    #             transform=transform
+    #         )
+    #         for i in range(0, len(shard_inputs_sorted), shards_per_clients)
+    #     ]
+
+# 百分之20的客户端，在30%的时候开始，sample占比会改变
+# 客户端和客户端之间可以重复

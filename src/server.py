@@ -62,6 +62,7 @@ class Server(object):
         self.dataset_name = data_config["dataset_name"]
         self.num_shards = data_config["num_shards"]
         self.iid = data_config["iid"]
+        self.num_class = data_config["num_class"]
 
         self.init_config = init_config
 
@@ -74,6 +75,10 @@ class Server(object):
         self.criterion = fed_config["criterion"]
         self.optimizer = fed_config["optimizer"]
         self.optim_config = optim_config
+
+        self.sorted_training_inputs = None
+        self.available_samples = None
+        self.transform = None
         
     def setup(self, **init_kwargs):
         """Set up all configuration for federated learning."""
@@ -89,10 +94,16 @@ class Server(object):
         del message; gc.collect()
 
         # split local dataset for each client
-        local_datasets, test_dataset = create_datasets(self.data_path, self.dataset_name, self.num_clients, self.num_shards, self.iid)
-        
-        # assign dataset to each client
-        self.clients = self.create_clients(local_datasets)
+        available_samples, training_dataset, test_dataset, transform = load_raw_datasets(self.data_path, self.dataset_name)
+        self.sorted_training_inputs = training_dataset
+        self.available_samples = available_samples
+        self.transform = transform
+
+        # create clients
+        self.clients = self.create_clients()
+
+        # select mutate clients
+        self.select_temporal_heterogeneous_clients()
 
         # prepare hold-out dataset for evaluation
         self.data = test_dataset
@@ -108,17 +119,28 @@ class Server(object):
         # send the model skeleton to all clients
         self.transmit_model()
         
-    def create_clients(self, local_datasets):
+    def create_clients(self):
         """Initialize each Client instance."""
         clients = []
-        for k, dataset in tqdm(enumerate(local_datasets), leave=False):
-            client = Client(client_id=k, local_data=dataset, device=self.device)
+        for k in range(self.num_clients):
+            distribution = np.ones(self.num_class) / self.num_class
+            client = Client(client_id=k, device=self.device, distribution=distribution)
             clients.append(client)
 
         message = f"[Round: {str(self._round).zfill(4)}] ...successfully created all {str(self.num_clients)} clients!"
         print(message); logging.info(message)
         del message; gc.collect()
         return clients
+
+    def select_temporal_heterogeneous_clients(self):
+        indices = np.random.choice(self.num_clients, 5, replace=False)
+
+        for index in indices:
+            self.clients[index].mutate()
+
+        message = f"[Round: {str(self._round).zfill(4)}] Clients {str(indices)} mutated!"
+        print(message); logging.info(message)
+        del message; gc.collect()
 
     def setup_clients(self, **client_config):
         """Set up each client."""
@@ -128,6 +150,30 @@ class Server(object):
         message = f"[Round: {str(self._round).zfill(4)}] ...successfully finished setup of all {str(self.num_clients)} clients!"
         print(message); logging.info(message)
         del message; gc.collect()
+
+    def feed_clients(self):
+        for k, client in tqdm(enumerate(self.clients), leave=False):
+            distribution = client.distribution * 100
+            new_input = []
+            new_label = []
+            for class_id, n in enumerate(distribution):
+                available_samples = self.available_samples[class_id]
+                indices = np.arange(0, len(available_samples))
+                selected_indices = np.random.choice(indices, int(n), replace=False)
+                selected_samples = available_samples[selected_indices]
+                self.available_samples[class_id] = np.delete(available_samples, selected_indices)
+
+                new_input.extend(self.sorted_training_inputs[selected_samples])
+                for _ in range(int(n)):
+                    new_label.append(class_id)
+
+            new_dataset = CustomTensorDataset((torch.Tensor(np.array(new_input)), torch.Tensor(new_label)), transform=self.transform)
+            if client.data is None:
+                client.data = new_dataset
+            else:
+                client.data + new_dataset
+
+            client.update_dataloader()
 
     def transmit_model(self, sampled_client_indices=None):
         """Send the updated global model to selected/all clients."""
@@ -291,11 +337,38 @@ class Server(object):
         test_accuracy = correct / len(self.data)
         return test_loss, test_accuracy
 
+    def update_client_distribution(self, distribution, addition=False):
+        for client in self.clients:
+            if client.temporal_heterogeneous:
+                if addition:
+                    client.distribution += distribution
+                else:
+                    client = distribution
+
+                message = f"[Round: {str(self._round).zfill(4)}] Client {str(client.id)} has a shifted distribution: {str(client.distribution)}"
+                print(message);
+                logging.info(message)
+
     def fit(self):
         """Execute the whole process of the federated learning."""
         self.results = {"loss": [], "accuracy": []}
         for r in range(self.num_rounds):
             self._round = r + 1
+
+            self.feed_clients()
+
+            # assign new distribution
+            if 5 <= self._round < 15:
+                new_dist = np.array([0.01, 0.01, 0.01, 0.01, -0.1 / 12, -0.1 / 12, -0.1 / 12, -0.1 / 12, -0.1 / 12, -0.1 / 12])
+                self.update_client_distribution(new_dist, True)
+
+            if self._round == 10:
+                a = 1
+
+            if self._round == 15:
+                new_dist = np.ones(10) / 10
+                self.update_client_distribution(new_dist, True)
+
             
             self.train_federated_model()
             test_loss, test_accuracy = self.evaluate_global_model()

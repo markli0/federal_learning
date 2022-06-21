@@ -26,7 +26,7 @@ if __name__ == "__main__":
     log_config = configs[6]["log_config"]
    
     # modify log_path to contain current time
-    log_config["log_path"] = os.path.join(log_config["log_path"], str(datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")))
+    log_config["log_path"] = os.path.join(log_config["log_path"], str(datetime.datetime.now().strftime("%Y-%m-%d")))
 
     # initiate TensorBaord for tracking losses and metrics
     writer = SummaryWriter(log_dir=log_config["log_path"], filename_suffix="FL")
