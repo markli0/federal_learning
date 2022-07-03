@@ -76,9 +76,14 @@ class Server(object):
         self.optimizer = fed_config["optimizer"]
         self.optim_config = optim_config
 
-        self.sorted_training_inputs = None
-        self.available_samples = None
+        self.sorted_train_inputs = None
+        self.sorted_test_inputs = None
+        self.available_train_samples = None
+        self.available_test_samples = None
         self.transform = None
+
+        self.data = None
+        self.dataloader = None
         
     def setup(self, **init_kwargs):
         """Set up all configuration for federated learning."""
@@ -94,21 +99,22 @@ class Server(object):
         del message; gc.collect()
 
         # split local dataset for each client
-        available_samples, training_dataset, test_dataset, transform = load_raw_datasets(self.data_path, self.dataset_name)
-        self.sorted_training_inputs = training_dataset
-        self.available_samples = available_samples
+        available_train_samples, train_dataset, available_test_samples, test_dataset, transform = load_raw_datasets(self.data_path, self.dataset_name)
+        self.sorted_train_inputs = train_dataset
+        self.available_train_samples = available_train_samples
+        self.sorted_test_inputs = test_dataset
+        self.available_test_samples = available_test_samples
         self.transform = transform
 
         # create clients
-        self.clients = self.create_clients()
+        # initial_distribution = np.ones(self.num_class) / self.num_class
+        initial_distribution = np.array([1/7, 1/7, 1/7, 1/7, 1/7, 1/7, 1/7, 0, 0, 0])
+
+        self.clients = self.create_clients(initial_distribution)
 
         # select mutate clients
-        self.select_temporal_heterogeneous_clients()
+        self.select_temporal_heterogeneous_clients(4)
 
-        # prepare hold-out dataset for evaluation
-        self.data = test_dataset
-        self.dataloader = DataLoader(test_dataset, batch_size=self.batch_size, shuffle=False)
-        
         # configure detailed settings for client upate and 
         self.setup_clients(
             batch_size=self.batch_size,
@@ -119,11 +125,10 @@ class Server(object):
         # send the model skeleton to all clients
         self.transmit_model()
         
-    def create_clients(self):
+    def create_clients(self, distribution):
         """Initialize each Client instance."""
         clients = []
         for k in range(self.num_clients):
-            distribution = np.ones(self.num_class) / self.num_class
             client = Client(client_id=k, device=self.device, distribution=distribution)
             clients.append(client)
 
@@ -132,8 +137,8 @@ class Server(object):
         del message; gc.collect()
         return clients
 
-    def select_temporal_heterogeneous_clients(self):
-        indices = np.random.choice(self.num_clients, 5, replace=False)
+    def select_temporal_heterogeneous_clients(self, n):
+        indices = np.random.choice(self.num_clients, n, replace=False)
 
         for index in indices:
             self.clients[index].mutate()
@@ -151,23 +156,53 @@ class Server(object):
         print(message); logging.info(message)
         del message; gc.collect()
 
-    def feed_clients(self):
+    def select_samples_by_distribution(self, distribution, total_samples, training=True):
+        available_indices = self.available_train_samples
+        sorted_dataset = self.sorted_train_inputs
+
+        if not training:
+            available_indices = self.available_test_samples
+            sorted_dataset = self.sorted_test_inputs
+
+        assert(len(available_indices), len(distribution))
+
+        distribution = distribution * total_samples
+        new_input = []
+        new_label = []
+        for class_id, n in enumerate(distribution):
+            available_samples = available_indices[class_id]
+
+            indices = np.arange(1, len(available_samples) - 1)
+            selected_indices = np.random.choice(indices, min(len(indices), int(n)), replace=False)
+
+            if training:
+                self.available_train_samples[class_id] = np.delete(available_samples, selected_indices)
+            else:
+                self.available_test_samples[class_id] = np.delete(available_samples, selected_indices)
+
+            selected_samples = available_samples[selected_indices]
+
+            extra = max(int(n) - len(indices), 0)
+            if extra > 0:
+                indices = np.arange(available_samples[0], available_samples[-1])
+                extra_indices = np.random.choice(indices, extra, replace=False)
+                selected_samples = np.concatenate((selected_samples, extra_indices))
+
+            new_input.extend(sorted_dataset[selected_samples])
+
+            for _ in range(int(n)):
+                new_label.append(class_id)
+
+        new_dataset = CustomTensorDataset((torch.Tensor(np.array(new_input)), torch.Tensor(new_label)),
+                                          transform=self.transform)
+
+        return new_dataset
+
+    def update_clients_train_set(self):
         for k, client in tqdm(enumerate(self.clients), leave=False):
-            distribution = client.distribution * 100
-            new_input = []
-            new_label = []
-            for class_id, n in enumerate(distribution):
-                available_samples = self.available_samples[class_id]
-                indices = np.arange(0, len(available_samples))
-                selected_indices = np.random.choice(indices, int(n), replace=False)
-                selected_samples = available_samples[selected_indices]
-                self.available_samples[class_id] = np.delete(available_samples, selected_indices)
+            n = 55000 / self.num_clients / self.num_rounds
+            new_dataset = self.select_samples_by_distribution(client.distribution, n)
 
-                new_input.extend(self.sorted_training_inputs[selected_samples])
-                for _ in range(int(n)):
-                    new_label.append(class_id)
-
-            new_dataset = CustomTensorDataset((torch.Tensor(np.array(new_input)), torch.Tensor(new_label)), transform=self.transform)
             if client.data is None:
                 client.data = new_dataset
             else:
@@ -198,15 +233,18 @@ class Server(object):
             print(message); logging.info(message)
             del message; gc.collect()
 
-    def sample_clients(self):
+    def sample_clients(self, distribution=None):
         """Select some fraction of all clients."""
         # sample clients randommly
+        if distribution is None:
+            distribution = np.ones(self.num_clients) / self.num_clients
+
         message = f"[Round: {str(self._round).zfill(4)}] Select clients...!"
         print(message); logging.info(message)
         del message; gc.collect()
 
         num_sampled_clients = max(int(self.fraction * self.num_clients), 1)
-        sampled_client_indices = sorted(np.random.choice(a=[i for i in range(self.num_clients)], size=num_sampled_clients, replace=False).tolist())
+        sampled_client_indices = sorted(np.random.choice(a=[i for i in range(self.num_clients)], size=num_sampled_clients, replace=False, p=distribution).tolist())
 
         return sampled_client_indices
     
@@ -285,7 +323,20 @@ class Server(object):
     def train_federated_model(self):
         """Do federated training."""
         # select pre-defined fraction of clients randomly
-        sampled_client_indices = self.sample_clients()
+        # distribution = []
+        # if self._round >= self.num_rounds / 2:
+        #     for client in self.clients:
+        #         if client.temporal_heterogeneous is True:
+        #             distribution.append(5)
+        #         else:
+        #             distribution.append(1)
+        # else:
+        #     for client in self.clients:
+        #         distribution.append(1)
+        # distribution = np.array(distribution) / sum(distribution)
+
+        distribution = None
+        sampled_client_indices = self.sample_clients(distribution)
 
         # send global model to the selected clients
         self.transmit_model(sampled_client_indices)
@@ -337,17 +388,32 @@ class Server(object):
         test_accuracy = correct / len(self.data)
         return test_loss, test_accuracy
 
-    def update_client_distribution(self, distribution, addition=False):
+    def update_client_distribution(self, distribution, addition=False, everyone=False):
         for client in self.clients:
-            if client.temporal_heterogeneous:
+            if client.temporal_heterogeneous or everyone:
                 if addition:
                     client.distribution += distribution
                 else:
-                    client = distribution
+                    client.distribution = distribution
 
                 message = f"[Round: {str(self._round).zfill(4)}] Client {str(client.id)} has a shifted distribution: {str(client.distribution)}"
                 print(message);
                 logging.info(message)
+
+    def update_test_set(self):
+        distribution = np.zeros(self.num_class)
+        for client in self.clients:
+            distribution += client.distribution
+
+        distribution = distribution / self.num_clients
+        new_dataset = self.select_samples_by_distribution(distribution, 800, False)
+
+        if self.data is None:
+            self.data = new_dataset
+            self.dataloader = DataLoader(new_dataset, batch_size=self.batch_size, shuffle=True)
+        else:
+            self.data + new_dataset
+            self.dataloader = DataLoader(self.data, batch_size=self.batch_size, shuffle=True)
 
     def fit(self):
         """Execute the whole process of the federated learning."""
@@ -355,21 +421,23 @@ class Server(object):
         for r in range(self.num_rounds):
             self._round = r + 1
 
-            self.feed_clients()
+            self.update_clients_train_set()
+            self.update_test_set()
 
             # assign new distribution
-            if 5 <= self._round < 15:
-                new_dist = np.array([0.01, 0.01, 0.01, 0.01, -0.1 / 12, -0.1 / 12, -0.1 / 12, -0.1 / 12, -0.1 / 12, -0.1 / 12])
-                self.update_client_distribution(new_dist, True)
+            if self.num_rounds / 2 == self._round:
+                new_dist = [1, 1, 1, 1, 1, 1, 1, 4, 4, 4]
+                new_dist = np.array(new_dist) / sum(new_dist)
+                self.update_client_distribution(new_dist, addition=False, everyone=False)
 
-            if self._round == 10:
-                a = 1
+            test_labels = self.data.tensors[1].numpy().astype(int)
+            message = f"[Round: {str(self._round).zfill(4)}] Current test set distribution: {str(np.bincount(test_labels) / sum(np.bincount(test_labels)))}. "
+            print(message); logging.info(message)
 
-            if self._round == 15:
-                new_dist = np.ones(10) / 10
-                self.update_client_distribution(new_dist, True)
+            # if self._round == 10:
+            #     new_dist = np.ones(10) / 10
+            #     self.update_client_distribution(new_dist, addition=False, everyone=True)
 
-            
             self.train_federated_model()
             test_loss, test_accuracy = self.evaluate_global_model()
             

@@ -6,10 +6,11 @@ import torch
 import torch.nn as nn
 import torch.nn.init as init
 
-from torch.utils.data import Dataset, TensorDataset, ConcatDataset
+from torch.utils.data import Dataset, TensorDataset, ConcatDataset, DataLoader
 import torchvision
 # from torchvision import datasets, transforms
 
+import config
 logger = logging.getLogger(__name__)
 
 
@@ -84,9 +85,10 @@ def init_net(model, init_type, init_gain, gpu_ids):
 #################
 class CustomTensorDataset(Dataset):
     """TensorDataset with support of transforms."""
-    def __init__(self, tensors, transform=None):
+    def __init__(self, tensors, batch_size=10, transform=None):
         assert all(tensors[0].size(0) == tensor.size(0) for tensor in tensors)
         self.tensors = tensors
+        self.batch_size = batch_size
         self.transform = transform
 
     def __getitem__(self, index):
@@ -106,61 +108,118 @@ class CustomTensorDataset(Dataset):
 
         self.tensors = (input, label)
 
+    def get_dataloader(self):
+        return DataLoader(self.data, batch_size=self.batch_size, shuffle=True)
 
-def load_raw_datasets(data_path, dataset_name):
-    """Split the whole dataset in IID or non-IID manner for distributing to clients."""
-    dataset_name = dataset_name.upper()
-    # get dataset from torchvision.datasets if exists
-    if hasattr(torchvision.datasets, dataset_name):
-        # set transformation differently per dataset
-        if dataset_name in ["CIFAR10"]:
-            transform = torchvision.transforms.Compose(
-                [
-                    torchvision.transforms.ToTensor(),
-                    torchvision.transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-                ]
+class DatasetController():
+    def __init__(self, dataset_name):
+        training_dataset, test_dataset = self.get_raw_dataset_by_name(config.DATASET_NAME)
+        self.train = training_dataset
+        self.test = test_dataset
+
+    def get_raw_dataset_by_name(self, dataset_name):
+        dataset_name = dataset_name.upper()
+        # get dataset from torchvision.datasets if exists
+        if hasattr(torchvision.datasets, dataset_name):
+            # set transformation differently per dataset
+            if dataset_name in ["CIFAR10"]:
+                transform = torchvision.transforms.Compose(
+                    [
+                        torchvision.transforms.ToTensor(),
+                        torchvision.transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                    ]
+                )
+            elif dataset_name in ["MNIST"]:
+                transform = torchvision.transforms.ToTensor()
+
+            # prepare raw training & test datasets
+            training_dataset = torchvision.datasets.__dict__[dataset_name](
+                root=config.DATA_PATH,
+                train=True,
+                download=True,
+                transform=transform
             )
-        elif dataset_name in ["MNIST"]:
-            transform = torchvision.transforms.ToTensor()
-        
-        # prepare raw training & test datasets
-        training_dataset = torchvision.datasets.__dict__[dataset_name](
-            root=data_path,
-            train=True,
-            download=True,
-            transform=transform
-        )
-        test_dataset = torchvision.datasets.__dict__[dataset_name](
-            root=data_path,
-            train=False,
-            download=True,
-            transform=transform
-        )
-    else:
-        # dataset not found exception
-        error_message = f"...dataset \"{dataset_name}\" is not supported or cannot be found in TorchVision Datasets!"
-        raise AttributeError(error_message)
 
-    # unsqueeze channel dimension for grayscale image datasets
-    if training_dataset.data.ndim == 3: # convert to NxHxW -> NxHxWx1
-        training_dataset.data.unsqueeze_(3)
-    num_categories = np.unique(training_dataset.targets).shape[0]
-    
-    if "ndarray" not in str(type(training_dataset.data)):
-        training_dataset.data = np.asarray(training_dataset.data)
-    if "list" not in str(type(training_dataset.targets)):
-        training_dataset.targets = training_dataset.targets.tolist()
+            test_dataset = torchvision.datasets.__dict__[dataset_name](
+                root=config.DATA_PATH,
+                train=False,
+                download=True,
+                transform=transform
+            )
+            return training_dataset, test_dataset
+        else:
+            # dataset not found exception
+            error_message = f"...dataset \"{dataset_name}\" is not supported or cannot be found in TorchVision Datasets!"
+            raise AttributeError(error_message)
 
-    sorted_indices = torch.argsort(torch.Tensor(training_dataset.targets))
-    training_inputs = training_dataset.data[sorted_indices]
+    def get_sorted_inputs_and_indices(self, dataset):
+        target = dataset.targets
 
-    indices = []
-    for categories in range(num_categories):
-        start = categories * len(sorted_indices) / num_categories
-        end = (categories + 1) * len(sorted_indices) / num_categories
-        indices.append(np.arange(int(start), int(end)))
+        if type(target) is not type(torch.tensor([5])):
+            target = torch.tensor(target)
 
-    return indices, training_inputs, test_dataset, transform
+        sorted_labels = torch.sort(target)[0]
+        sorted_indices = torch.sort(target)[1]
+        inputs = dataset.data[sorted_indices]
+
+        dataset_indices = []
+        start = 0
+        for count in torch.bincount(sorted_labels):
+            dataset_indices.append(np.arange(start, start + count))
+            start += count
+
+        return inputs, dataset_indices
+
+    def load_raw_datasets(data_path, dataset_name):
+        dataset_name = dataset_name.upper()
+        # get dataset from torchvision.datasets if exists
+        if hasattr(torchvision.datasets, dataset_name):
+            # set transformation differently per dataset
+            if dataset_name in ["CIFAR10"]:
+                transform = torchvision.transforms.Compose(
+                    [
+                        torchvision.transforms.ToTensor(),
+                        torchvision.transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                    ]
+                )
+            elif dataset_name in ["MNIST"]:
+                transform = torchvision.transforms.ToTensor()
+
+            # prepare raw training & test datasets
+            training_dataset = torchvision.datasets.__dict__[dataset_name](
+                root=data_path,
+                train=True,
+                download=True,
+                transform=transform
+            )
+            test_dataset = torchvision.datasets.__dict__[dataset_name](
+                root=data_path,
+                train=False,
+                download=True,
+                transform=transform
+            )
+        else:
+            # dataset not found exception
+            error_message = f"...dataset \"{dataset_name}\" is not supported or cannot be found in TorchVision Datasets!"
+            raise AttributeError(error_message)
+
+        # unsqueeze channel dimension for grayscale image datasets
+        if training_dataset.data.ndim == 3: # convert to NxHxW -> NxHxWx1
+            training_dataset.data.unsqueeze_(3)
+        num_categories = np.unique(training_dataset.targets).shape[0]
+
+        if "ndarray" not in str(type(training_dataset.data)):
+            training_dataset.data = np.asarray(training_dataset.data)
+            test_dataset.data = np.asarray(test_dataset.data)
+
+        if "list" not in str(type(training_dataset.targets)):
+            training_dataset.targets = training_dataset.targets.tolist()
+            test_dataset.targets = test_dataset.targets.tolist()
+
+        sorted_train_inputs, train_indices = get_sorted_inputs_and_indices(training_dataset)
+        sorted_test_inputs, test_indices = get_sorted_inputs_and_indices(test_dataset)
+
+        return train_indices, sorted_train_inputs, test_indices, sorted_test_inputs, transform
 
     # # split dataset according to iid flag
     # if iid:
