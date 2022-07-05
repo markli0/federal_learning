@@ -1,11 +1,10 @@
 import gc
-import pickle
 import logging
 import torch
-import torch.nn as nn
 
-from torch.utils.data import DataLoader
-
+# custom packages
+from .config import config
+from .utils.DatasetController import *
 logger = logging.getLogger(__name__)
 
 
@@ -17,18 +16,29 @@ class Client(object):
 
     Attributes:
         id: Integer indicating client's id.
-        data: torch.utils.data.Dataset instance containing local data.
+        train: torch.utils.data.Dataset instance containing local data.
         device: Training machine indicator (e.g. "cpu", "cuda").
         __model: torch.nn instance as a local model.
     """
     def __init__(self, client_id, device, distribution):
-        """Client object is initiated by the center server."""
+        """client training configs"""
+        self.batch_size = config.BATCH_SIZE
+        self.local_epoch = config.LOCAL_EPOCH
+        self.criterion = config.CRITERION
+        self.optimizer = config.OPTIMIZER
+        self.optim_config = config.OPTIMIZER_CONFIG
+
+        """server side configs"""
         self.id = client_id
         self.device = device
         self.distribution = distribution
         self.temporal_heterogeneous = False
-        self.data = None
+        self.train = None
+        self.test = None
         self.__model = None
+
+        self.last_round = 0.0
+        self.performance_drift = 0.0
 
     @property
     def model(self):
@@ -42,21 +52,22 @@ class Client(object):
 
     def __len__(self):
         """Return a total size of the client's local data."""
-        return len(self.data)
+        return len(self.train)
 
     def mutate(self):
         self.temporal_heterogeneous = True
 
-    def setup(self, **client_config):
-        """Set up common configuration of each client; called by center server."""
-        self.batch_size = client_config["batch_size"]
-        self.local_epoch = client_config["num_local_epochs"]
-        self.criterion = client_config["criterion"]
-        self.optimizer = client_config["optimizer"]
-        self.optim_config = client_config["optim_config"]
+    def update_train(self, new_dataset, replace=False):
+        if self.train is None or replace:
+            self.train = new_dataset
+        else:
+            self.train + new_dataset
 
-    def update_dataloader(self):
-        self.dataloader = DataLoader(self.data, batch_size=self.batch_size, shuffle=True)
+    def update_test(self, new_dataset, replace=True):
+        if self.test is None or replace:
+            self.test = new_dataset
+        else:
+            self.test + new_dataset
 
     def client_update(self):
         """Update local model using local dataset."""
@@ -65,7 +76,7 @@ class Client(object):
 
         optimizer = eval(self.optimizer)(self.model.parameters(), **self.optim_config)
         for e in range(self.local_epoch):
-            for data, labels in self.dataloader:
+            for data, labels in self.train.get_dataloader():
                 data, labels = data.float().to(self.device), labels.long().to(self.device)
   
                 optimizer.zero_grad()
@@ -85,7 +96,7 @@ class Client(object):
 
         test_loss, correct = 0, 0
         with torch.no_grad():
-            for data, labels in self.dataloader:
+            for data, labels in self.test.get_dataloader():
                 data, labels = data.float().to(self.device), labels.long().to(self.device)
                 outputs = self.model(data)
                 test_loss += eval(self.criterion)()(outputs, labels).item()
@@ -96,8 +107,10 @@ class Client(object):
                 if self.device == "cuda": torch.cuda.empty_cache()
         self.model.to("cpu")
 
-        test_loss = test_loss / len(self.dataloader)
-        test_accuracy = correct / len(self.data)
+        test_loss = test_loss / len(self.test.get_dataloader())
+        test_accuracy = correct / len(self.test)
+
+        self.performance_drift = abs(self.last_round - test_accuracy)
 
         message = f"\t[Client {str(self.id).zfill(4)}] ...finished evaluation!\
             \n\t=> Test loss: {test_loss:.4f}\
