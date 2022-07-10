@@ -30,3 +30,7 @@ class Printer:
 
     def get_tensorboard_writer(self):
         return self.writer
+
+def pretty_list(list):
+    text = str(["{:.2f}".format(i) for i in list])
+    return text

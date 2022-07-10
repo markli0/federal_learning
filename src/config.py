@@ -10,6 +10,7 @@ class config:
     NUM_TEST_SAMPLES = 200                          # number of samples in the test set
     DRIFT = 0.5                                     # when drift happens
     FRACTION = 0.1                                  # percentage of clients selected each round
+    SHARD = 100
 
     # global config
     SEED = 5959
@@ -18,7 +19,7 @@ class config:
 
     # data config
     DATA_PATH = './data/'
-    DATASET_NAME = 'CIFAR10'
+    DATASET_NAME = 'MNIST'
     NUM_CLASS = 10
 
     # train config
@@ -30,13 +31,12 @@ class config:
     }
 
     # client config
-    LOCAL_EPOCH = 5
-    BATCH_SIZE = 10
+    LOCAL_EPOCH = 10
+    BATCH_SIZE = 20
     TRAIN_TEST_SPLIT = 0.2
 
     # server config
     GLOBAL_TEST_SAMPLES = 1000
-
 
     # communication config
 

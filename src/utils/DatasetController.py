@@ -89,6 +89,8 @@ class DatasetController:
         # unsqueeze channel dimension for grayscale image datasets
         if training_dataset.data.ndim == 3:  # convert to NxHxW -> NxHxWx1
             training_dataset.data.unsqueeze_(3)
+        if test_dataset.data.ndim == 3:
+            test_dataset.data.unsqueeze_(3)
         self.num_class = np.unique(training_dataset.targets).shape[0]
 
         if "ndarray" not in str(type(training_dataset.data)):
@@ -153,7 +155,6 @@ class DatasetController:
     def draw_data_index_by_class(self, class_id, n, remove_from_pool=True, draw_from_pool=True):
         available_indices = self.sorted_indices[class_id]
 
-        selected_indices = []
         if draw_from_pool:
             indices = np.arange(1, len(available_indices) - 1)
             selected_indices = np.random.choice(indices, min(len(indices), int(n)), replace=False)
@@ -164,12 +165,13 @@ class DatasetController:
         if remove_from_pool:
             self.sorted_indices[class_id] = np.delete(available_indices, selected_indices)
 
-        return selected_indices
+        return available_indices[selected_indices]
 
     def update_clients_datasets(self, clients, n):
         for client in clients:
             new_train_set = self.draw_data_by_distribution(client.distribution, n)
             client.update_train(new_train_set, replace=False)
+
             new_test_set = self.draw_data_by_distribution(client.distribution, n * config.TRAIN_TEST_SPLIT,
                                                           remove_from_pool=False, draw_from_pool=False)
             client.update_test(new_test_set, replace=True)

@@ -5,7 +5,7 @@ import gc
 
 # custom packages
 from ..config import config
-
+from ..utils.Printer import *
 
 class CommunicationController:
     def __init__(self, clients):
@@ -16,8 +16,15 @@ class CommunicationController:
 
         self.sampled_clients_indices = None
 
-    def update_weight(self, clients):
-        return
+    def update_weight(self):
+        weight = []
+        for client in self.clients:
+            weight.append(client.get_performance_gap())
+
+        weight = np.array(weight) / sum(weight)
+        self.weight = weight
+        message = f"...Current client weights are {pretty_list(weight)}"
+        return message
 
     def sample_clients(self):
         p = np.array(self.weight) / sum(self.weight)
@@ -31,18 +38,26 @@ class CommunicationController:
 
         return message, sampled_client_indices
 
-    def update_selected_clients(self):
+    def update_selected_clients(self, all_client=False):
         """Call "client_update" function of each selected client."""
         selected_total_size = 0
-        for idx in self.sampled_clients_indices:
-            self.clients[idx].client_update()
-            selected_total_size += len(self.clients[idx])
+
+        if all_client:
+            clients = self.clients
+        else:
+            clients = []
+            for idx in self.sampled_clients_indices:
+                clients.append(self.clients[idx])
+
+        for client in clients:
+            client.client_update()
+            selected_total_size += len(client)
 
         message = f"...{len(self.sampled_clients_indices)} clients are selected and updated (with total sample size: {str(selected_total_size)})!"
 
         return message
 
-    def evaluate_selected_models(self, sampled_client_indices):
+    def evaluate_selected_models(self):
         """Call "client_evaluate" function of each selected client."""
         for idx in self.sampled_clients_indices:
             self.clients[idx].client_evaluate()
@@ -63,6 +78,7 @@ class CommunicationController:
 
         for target_client in target_clients:
             target_client.model = copy.deepcopy(model)
+            target_client.global_model = copy.deepcopy(model)
 
         return message
 

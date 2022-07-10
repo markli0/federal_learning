@@ -5,6 +5,7 @@ import logging
 import numpy as np
 import torch
 import torch.nn as nn
+import yaml
 
 from multiprocessing import pool, cpu_count
 from torch.utils.data import DataLoader
@@ -16,22 +17,36 @@ from .models import *
 from .client import Client
 from .utils.CommunicationController import *
 from .utils.DatasetController import *
-
+from .utils.Printer import *
+from .util import *
 logger = logging.getLogger(__name__)
 
 
 class Server(object):
     def __init__(self, writer):
+        # original code
+        with open('./config.yaml') as c:
+            configs = list(yaml.load_all(c, Loader=yaml.FullLoader))
+        global_config = configs[0]["global_config"]
+        data_config = configs[1]["data_config"]
+        fed_config = configs[2]["fed_config"]
+        optim_config = configs[3]["optim_config"]
+        self.init_config = configs[4]["init_config"]
+        model_config = configs[5]["model_config"]
+        log_config = configs[6]["log_config"]
+        self.model = eval(model_config["name"])(**model_config)
+
+
+
         self._round = 0
         self.clients = None
         self.writer = writer
         self.num_clients = config.NUM_CLIENTS
 
-        self.model = eval(config.MODEL_NAME)(**config.MODEL_CONFIG)
-        
+        # self.model = eval(config.MODEL_NAME)(**config.MODEL_CONFIG)
+
         self.seed = config.SEED
         self.device = config.DEVICE
-        self.mp_flag = config.IS_MP
 
         self.data = None
         self.dataloader = None
@@ -44,7 +59,9 @@ class Server(object):
     def setup(self):
         # initialize weights of the model
         torch.manual_seed(self.seed)
-        init_net(self.model)
+        # init_net(self.model)
+        init_net(self.model, **self.init_config)
+
         self.log(f"...successfully initialized model (# parameters: {str(sum(p.numel() for p in self.model.parameters()))})!")
 
         # initialize DatasetController
@@ -54,7 +71,6 @@ class Server(object):
         # create clients
         initial_distribution = np.array([1/7, 1/7, 1/7, 1/7, 1/7, 1/7, 1/7, 0, 0, 0])
         self.clients = self.create_clients(initial_distribution)
-
         # select mutate clients
         self.select_drifted_clients(4)
 
@@ -84,7 +100,8 @@ class Server(object):
 
     def update_model(self, sampled_client_indices, coefficients):
         """Average the updated and transmitted parameters from each selected client."""
-        self.log(f"Aggregate updated weights of {len(sampled_client_indices)} clients...!")
+        message = f"Aggregate updated weights of {len(sampled_client_indices)} clients...!"
+        self.log(message)
 
         averaged_weights = OrderedDict()
         for it, idx in tqdm(enumerate(sampled_client_indices), leave=False):
@@ -96,27 +113,29 @@ class Server(object):
                     averaged_weights[key] += coefficients[it] * local_weights[key]
         self.model.load_state_dict(averaged_weights)
 
-        message = f"[Round: {str(self._round).zfill(4)}] ...updated weights of {len(sampled_client_indices)} clients are successfully averaged!"
-        print(message); logging.info(message)
-        del message; gc.collect()
+        message = f"...updated weights of {len(sampled_client_indices)} clients are successfully averaged!"
+        self.log(message)
 
     def train_federated_model(self):
         """Do federated training."""
 
-        # select clients
+        # select clients based on weights
         message, sampled_client_indices = self.CommunicationController.sample_clients()
         self.log(message)
+
+        # assign new training and test set based on distribution
+        self.DatasetController.update_clients_datasets(self.clients, config.SHARD)
 
         # send global model to the selected clients
         message = self.CommunicationController.transmit_model(self.model)
         self.log(message)
 
-        # updated selected clients with local dataset
-        message = self.CommunicationController.update_selected_clients()
+        # train all clients model with local dataset
+        message = self.CommunicationController.update_selected_clients(all_client=False)
         self.log(message)
 
         # evaluate selected clients with local dataset
-        message =self.CommunicationController.evaluate_selected_models()
+        message = self.CommunicationController.evaluate_selected_models()
         self.log(message)
 
         # calculate averaging coefficient of weights
@@ -124,7 +143,11 @@ class Server(object):
         coefficients = np.array(coefficients) / sum(coefficients)
 
         # average each updated model parameters of the selected clients and update the global model
-        self.average_model(sampled_client_indices, coefficients)
+        self.update_model(sampled_client_indices, coefficients)
+
+        # update client selection weight
+        # message = self.CommunicationController.update_weight()
+        # self.log(message)
         
     def evaluate_global_model(self):
         """Evaluate the global model using the global holdout dataset (self.data)."""
@@ -139,7 +162,7 @@ class Server(object):
                                                                            config.GLOBAL_TEST_SAMPLES,
                                                                            remove_from_pool=False, draw_from_pool=False)
 
-        message = ["%0.2f".format(i) for i in global_distribution]
+        message = pretty_list(global_distribution)
         self.log(f"Current test set distribution: [{str(message)}]. ")
 
         # start evaluation process
@@ -148,7 +171,7 @@ class Server(object):
 
         test_loss, correct = 0, 0
         with torch.no_grad():
-            for data, labels in self.data.get_dataloader():
+            for data, labels in global_test_set.get_dataloader():
                 data, labels = data.float().to(self.device), labels.long().to(self.device)
                 outputs = self.model(data)
                 test_loss += eval(config.CRITERION)()(outputs, labels).item()
@@ -164,8 +187,8 @@ class Server(object):
         test_accuracy = correct / len(global_test_set)
 
         # print to tensorboard and log
-        self.writer.add_scalars('Loss', test_loss, self._round)
-        self.writer.add_scalars('Accuracy', test_accuracy, self._round)
+        self.writer.add_scalar('Loss', test_loss, self._round)
+        self.writer.add_scalar('Accuracy', test_accuracy, self._round)
 
         message = f"Evaluate global model's performance...!\
             \n\t[Server] ...finished evaluation!\
@@ -193,9 +216,6 @@ class Server(object):
                 new_dist = [1, 1, 1, 1, 1, 1, 1, 4, 4, 4]
                 new_dist = np.array(new_dist) / sum(new_dist)
                 self.update_client_distribution(new_dist, addition=False, everyone=False)
-
-            # assign new training and test set based on distribution
-            self.DatasetController.update_clients_datasets(self.clients, 100)
 
             # train the model
             self.train_federated_model()
