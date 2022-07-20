@@ -158,22 +158,23 @@ class DatasetController:
         if draw_from_pool:
             indices = np.arange(1, len(available_indices) - 1)
             selected_indices = np.random.choice(indices, min(len(indices), int(n)), replace=False)
+            res = available_indices[selected_indices]
         else:
-            indices = np.arange(available_indices[0], available_indices[-1])
-            selected_indices = np.random.choice(indices, int(n), replace=False)
-
+            indices = np.arange(available_indices[0], available_indices[-1] + 1)
+            res = np.random.choice(indices, int(n), replace=False)
         if remove_from_pool:
             self.sorted_indices[class_id] = np.delete(available_indices, selected_indices)
 
-        return available_indices[selected_indices]
+        return res
 
-    def update_clients_datasets(self, clients, n):
+    def update_clients_datasets(self, clients):
         for client in clients:
-            new_train_set = self.draw_data_by_distribution(client.distribution, n)
+            new_train_set = self.draw_data_by_distribution(client.distribution, config.NUM_TRAINING_SAMPLES)
             client.update_train(new_train_set, replace=False)
 
-            new_test_set = self.draw_data_by_distribution(client.distribution, n * config.TRAIN_TEST_SPLIT,
+            new_test_set = self.draw_data_by_distribution(client.distribution, config.NUM_TEST_SAMPLES,
                                                           remove_from_pool=False, draw_from_pool=False)
+
             client.update_test(new_test_set, replace=True)
             # client.train.class_swap(1, 2)
 

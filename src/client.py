@@ -1,6 +1,6 @@
 import gc
-import logging
-import yaml
+import copy
+from collections import OrderedDict
 
 # custom packages
 from .config import config
@@ -22,25 +22,11 @@ class Client(object):
     """
     def __init__(self, client_id, device, distribution):
         """client training configs"""
-        with open('./config.yaml') as c:
-            configs = list(yaml.load_all(c, Loader=yaml.FullLoader))
-        global_config = configs[0]["global_config"]
-        data_config = configs[1]["data_config"]
-        fed_config = configs[2]["fed_config"]
-        optim_config = configs[3]["optim_config"]
-        model_config = configs[5]["model_config"]
-        log_config = configs[6]["log_config"]
-
         self.batch_size = config.BATCH_SIZE
         self.local_epoch = config.LOCAL_EPOCH
-        # self.criterion = config.CRITERION
-        # self.optimizer = config.OPTIMIZER
-        # self.optim_config = config.OPTIMIZER_CONFIG
-
-        self.criterion = fed_config["criterion"]
-        self.optimizer = fed_config["optimizer"]
-        self.optim_config = optim_config
-
+        self.criterion = config.CRITERION
+        self.optimizer = config.OPTIMIZER
+        self.optim_config = config.OPTIMIZER_CONFIG
 
         """server side configs"""
         self.id = client_id
@@ -50,11 +36,11 @@ class Client(object):
         self.train = None
         self.test = None
         self.__model = None
-        self.__global_model = None
+        self.global_model = None
 
-        self.current_accuracy = 0.0
-        self.last_round_gap = None
-        self.current_round_gap = 0.0
+        self.idx_t0 = 0.0
+        self.idx_t1 = 0.0
+        self.just_updated = False
 
     @property
     def model(self):
@@ -66,15 +52,20 @@ class Client(object):
         """Local model setter for passing globally aggregated model parameters."""
         self.__model = model
 
-    @property
-    def global_model(self):
-        """Local model getter for parameter aggregation."""
-        return self.__global_model
+    def get_gradient(self):
+        new_model = copy.deepcopy(self.model)
+        averaged_weights = OrderedDict()
 
-    @model.setter
-    def global_model(self, model):
-        """Local model setter for passing globally aggregated model parameters."""
-        self.__global_model = model
+        local_weights = self.model.state_dict()
+        global_weights = self.global_model.state_dict()
+        for key in self.model.state_dict().keys():
+            x = global_weights[key]
+            y = local_weights[key]
+            z = x - y
+            averaged_weights[key] = global_weights[key] - local_weights[key]
+
+        new_model.load_state_dict(averaged_weights)
+        return new_model
 
     def __len__(self):
         """Return a total size of the client's local data."""
@@ -110,13 +101,19 @@ class Client(object):
                 loss = eval(self.criterion)()(outputs, labels)
 
                 loss.backward()
-                optimizer.step() 
+                optimizer.step()
 
-                if self.device == "cuda": torch.cuda.empty_cache()               
+                if self.device == "cuda": torch.cuda.empty_cache()
+
         self.model.to("cpu")
-        self.client_evaluate(test_set=True)
-        self.client_evaluate(test_set=False)
-        return
+
+        if self.just_updated:
+            _, global_accuracy = self.client_evaluate(current_model=False, log=False)
+            _, current_accuracy = self.client_evaluate(current_model=True, log=False)
+
+            self.idx_t0 = current_accuracy - global_accuracy
+            self.global_accuracy = global_accuracy
+            self.just_updated = False
 
     def client_evaluate(self, current_model=True, log=True, test_set=True):
         """Evaluate local model using local dataset (same as training set for convenience)."""
@@ -149,27 +146,40 @@ class Client(object):
         test_loss = test_loss / len(dataset.get_dataloader())
         test_accuracy = correct / len(dataset)
 
-        self.current_accuracy = test_accuracy
-
         message = f"\t[Client {str(self.id).zfill(4)}] ...finished evaluation!\
             \n\t=> Test loss: {test_loss:.4f}\
             \n\t=> Test accuracy: {100. * test_accuracy:.2f}%\n"
         if log:
             print(message, flush=True); logging.info(message)
+
         del message; gc.collect()
 
         return test_loss, test_accuracy
 
     def get_performance_gap(self):
         _, global_accuracy = self.client_evaluate(current_model=False, log=False)
-        self.current_round_gap = abs(self.current_accuracy - global_accuracy)
+        _, current_accuracy = self.client_evaluate(current_model=True, log=False)
 
-        if self.last_round_gap is None:
-            return self.current_accuracy
+        self.idx_t1 = current_accuracy - global_accuracy
+
+        # print(id(self.model))
+        # print(id(self.global_model))
+
+        if self.idx_t0 is None:
+            self.idx_t0 = self.idx_t1
         else:
-            res = self.last_round_gap - self.current_round_gap
-            self.last_round_gap = self.current_round_gap
-            return res
+            res = self.idx_t1 - self.idx_t0
+
+            message = f"\t[Client {str(self.id).zfill(4)}]:!\
+                \n\t=> Global Accuracy: {100. * global_accuracy:.2f}%\
+                \n\t=> Current Accuracy: {100. * current_accuracy:.2f}%\
+                \n\t=> idx_t0: {100. * self.idx_t0: .2f}%\
+                \n\t=> idx_t1: {100. * self.idx_t1: .2f}%"
+
+            print(message, flush=True);
+            logging.info(message)
+
+            return max(res, 0.000001)
 
 
 

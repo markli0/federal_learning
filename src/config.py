@@ -3,19 +3,23 @@ import torch
 
 class config:
     # frequently used
-    RUN_NAME = 'fedavg'
+    FEDAVG = False
+    RUN_NAME = 'test_model_coeff_0.6'
+    GRADIENT = False
     NUM_CLIENTS = 20
     NUM_ROUNDS = 20
     NUM_TRAINING_SAMPLES = 200                      # number of samples added to local training set
     NUM_TEST_SAMPLES = 200                          # number of samples in the test set
     DRIFT = 0.5                                     # when drift happens
     FRACTION = 0.1                                  # percentage of clients selected each round
-    SHARD = 100
+    MODEL_COEFF = 0.6
+
+    C_1 = 20
+    C_2 = 0.1
 
     # global config
     SEED = 5959
     DEVICE = "cuda"
-    IS_MP = True
 
     # data config
     DATA_PATH = './data/'
@@ -31,9 +35,8 @@ class config:
     }
 
     # client config
-    LOCAL_EPOCH = 10
+    LOCAL_EPOCH = 5
     BATCH_SIZE = 20
-    TRAIN_TEST_SPLIT = 0.2
 
     # server config
     GLOBAL_TEST_SAMPLES = 1000
@@ -63,3 +66,7 @@ class config:
     INIT_TYPE = "xavier"
     INIT_GAIN = 1.0
     GPU_IDS = [0]
+
+
+def load_model():
+    return eval(config.MODEL_NAME)(**config.MODEL_CONFIG)

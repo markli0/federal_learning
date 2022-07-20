@@ -58,6 +58,15 @@ class CNN(nn.Module):
         x = self.fc2(x)
         return x
 
+    def flatten_model(self):
+        model_dict = self.state_dict()
+        tensor = np.array([])
+
+        for key in model_dict.keys():
+            tensor = np.concatenate((tensor, model_dict[key].cpu().numpy().flatten()))
+
+        return torch.tensor(tensor).squeeze()
+
 # for CIFAR10
 class CNN2(nn.Module):
     def __init__(self, name, in_channels, hidden_channels, num_hiddens, num_classes):
