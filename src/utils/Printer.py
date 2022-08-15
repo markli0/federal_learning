@@ -15,7 +15,7 @@ class Printer:
 
         # initiate TensorBoard for tracking losses and metrics
         self.writer = SummaryWriter(log_dir=log_path, filename_suffix="FL")
-        os.system(f"tensorboard --logdir={log_path} --port={config.TB_PORT} --host={config.TB_HOST}")
+        # os.system(f"tensorboard --logdir={log_path} --port={config.TB_PORT} --host={config.TB_HOST}")
 
         logger = logging.getLogger(__name__)
         logging.basicConfig(

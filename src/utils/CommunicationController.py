@@ -19,28 +19,34 @@ class CommunicationController:
 
     def update_weight(self):
         if self.weight is None:
-            self.weight = np.ones(len(self.clients)) / len(self.clients)
-            for client in self.clients:
-                client.get_performance_gap()
-            weight = self.weight
-        else:
-            weight = []
-            for client in self.clients:
-                weight.append(client.get_performance_gap())
+            self.weight = np.ones(self.num_clients) / self.num_clients
 
-            self.improvement = np.array(weight)
-            self.weight = np.array(weight) / sum(weight)
+        weight = []
+        for client in self.clients:
+            # if self.sampled_clients_indices is not None and client.id in self.sampled_clients_indices and self.improvement is not None:
+            #     weight.append(max(0.001, self.improvement[client.id] - 0.15))
+            # else:
+            #     weight.append(client.get_performance_gap())
 
-        message = f"Current clients have improvements: {pretty_list(weight)} and have weights: {pretty_list(self.weight)}"
+            weight.append(client.get_performance_gap())
+
+        # self.improvement = np.array(weight)
+        # self.weight = np.array(weight) / sum(weight)
+        self.weight = np.minimum(self.weight + np.array(weight) - np.ones(self.num_clients) * config.DECAY, np.ones(len(weight)))
+        self.weight = np.maximum(self.weight, np.zeros(len(weight)))
+
+        self.improvement = self.weight
+
+        message = f"Current clients have weights: {pretty_list(self.weight)} and have improvement: {pretty_list(weight)}"
         return message
 
     def sample_clients_test(self):
         if self.improvement is None:
             return self.sample_clients()
 
-        frequency = []
-        for improvement in self.improvement:
-            frequency.append(1/(1 + np.exp(-config.C_1 * (improvement - config.C_2))))
+        frequency = self.weight
+        # for improvement in self.improvement:
+        #     frequency.append(1/(1 + np.exp(-config.C_1 * (improvement - config.C_2))))
 
         random_numbers = np.random.uniform(0, 1, len(frequency))
 
@@ -108,7 +114,6 @@ class CommunicationController:
         for target_client in target_clients:
             target_client.model = copy.deepcopy(model)
             target_client.global_model = copy.deepcopy(model)
-            target_client.just_updated = True
 
         return message
 

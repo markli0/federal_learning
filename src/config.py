@@ -3,19 +3,24 @@ import torch
 
 class config:
     # frequently used
-    FEDAVG = False
-    RUN_NAME = 'test_model_coeff_0.6'
+    CLASS_SWAP = True
+    FEDAVG = True
+    RUN_NAME = None
+
+    # 'class_intro_our_c_2_0.05_{}'
+    RUN_NAME_ALL = 'class_swap_fedavg_freq_{}_{}'  # 'class_intro_fed_avg_freq_{}_{}' #_coeff0.4_with_reduced_freq=0.15'
     GRADIENT = False
     NUM_CLIENTS = 20
     NUM_ROUNDS = 20
     NUM_TRAINING_SAMPLES = 200                      # number of samples added to local training set
     NUM_TEST_SAMPLES = 200                          # number of samples in the test set
     DRIFT = 0.5                                     # when drift happens
-    FRACTION = 0.1                                  # percentage of clients selected each round
-    MODEL_COEFF = 0.6
+    FRACTION = 0.1                                 # percentage of clients selected each round
+    MODEL_COEFF = 0.4
 
-    C_1 = 20
+    C_1 = 30
     C_2 = 0.1
+    DECAY = 0.13
 
     # global config
     SEED = 5959

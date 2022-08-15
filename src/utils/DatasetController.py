@@ -167,16 +167,19 @@ class DatasetController:
 
         return res
 
-    def update_clients_datasets(self, clients):
+    def update_clients_datasets(self, clients, swap):
         for client in clients:
             new_train_set = self.draw_data_by_distribution(client.distribution, config.NUM_TRAINING_SAMPLES)
-            client.update_train(new_train_set, replace=False)
 
             new_test_set = self.draw_data_by_distribution(client.distribution, config.NUM_TEST_SAMPLES,
                                                           remove_from_pool=False, draw_from_pool=False)
 
+            if client.temporal_heterogeneous and swap:
+                new_train_set.class_swap(1, 2)
+                new_test_set.class_swap(1, 2)
+
+            client.update_train(new_train_set, replace=False)
             client.update_test(new_test_set, replace=True)
-            # client.train.class_swap(1, 2)
 
 
 def get_dataloader(data):

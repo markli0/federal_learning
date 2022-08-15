@@ -53,19 +53,9 @@ class Client(object):
         self.__model = model
 
     def get_gradient(self):
-        new_model = copy.deepcopy(self.model)
-        averaged_weights = OrderedDict()
+        grad = np.subtract(self.global_model.flatten_model(), self.model.flatten_model())
 
-        local_weights = self.model.state_dict()
-        global_weights = self.global_model.state_dict()
-        for key in self.model.state_dict().keys():
-            x = global_weights[key]
-            y = local_weights[key]
-            z = x - y
-            averaged_weights[key] = global_weights[key] - local_weights[key]
-
-        new_model.load_state_dict(averaged_weights)
-        return new_model
+        return grad / (len(self.train) * self.local_epoch * config.OPTIMIZER_CONFIG['lr'] / self.batch_size)
 
     def __len__(self):
         """Return a total size of the client's local data."""
@@ -112,7 +102,6 @@ class Client(object):
             _, current_accuracy = self.client_evaluate(current_model=True, log=False)
 
             self.idx_t0 = current_accuracy - global_accuracy
-            self.global_accuracy = global_accuracy
             self.just_updated = False
 
     def client_evaluate(self, current_model=True, log=True, test_set=True):
