@@ -33,7 +33,7 @@ class CommunicationController:
         # self.improvement = np.array(weight)
         # self.weight = np.array(weight) / sum(weight)
         self.weight = np.minimum(self.weight + np.array(weight) - np.ones(self.num_clients) * config.DECAY, np.ones(len(weight)))
-        self.weight = np.maximum(self.weight, np.zeros(len(weight)))
+        self.weight = np.maximum(self.weight, np.ones(len(weight)) * config.BASE)
 
         self.improvement = self.weight
 

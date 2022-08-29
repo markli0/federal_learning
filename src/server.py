@@ -309,6 +309,17 @@ class Server(object):
 
     def fit(self):
         """Execute the whole process of the federated learning."""
+        dis = []
+        for c in self.clients:
+            if c.temporal_heterogeneous:
+                dis.append(8)
+            else:
+                dis.append(1)
+
+        p = np.array(dis)
+        p = p / sum(p)
+        self.CommunicationController.weight = p
+
         for r in range(config.NUM_ROUNDS):
             self._round = r + 1
 
@@ -320,7 +331,7 @@ class Server(object):
                             client.train.class_swap(1, 2)
                 else:
                     new_dist = [1, 1, 1, 1, 1, 1, 1, 4, 4, 4]
-                    # new_dist = np.array(new_dist) / sum(new_dist)
+                    new_dist = np.array(new_dist) / sum(new_dist)
                     self.update_client_distribution(new_dist, addition=False, everyone=False)
 
                 # weight = []
@@ -347,5 +358,11 @@ class Server(object):
 
             message = f"Clients have uploaded their model {str(self.num_upload)} times！"
             self.log(message)
+
+            message = f"Overall Accuracy is {str(sum(self.round_accuracy) / len(self.round_accuracy))}!"
+            self.log(message)
+
+        self.writer.add_text('accuracy', str(sum(self.round_accuracy) / len(self.round_accuracy)))
+        self.writer.add_text('freq', str(self.num_upload))
 
         return sum(self.round_accuracy) / len(self.round_accuracy)
